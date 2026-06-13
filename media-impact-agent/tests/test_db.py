@@ -5,7 +5,7 @@ Voraussetzung: Container mi-postgres-dev läuft auf Port 5433.
 
 Starten mit:
     docker compose up -d
-    DATABASE_URL=postgresql://miuser:mipass@localhost:5433/mediaimpact pytest tests/test_db.py -v
+    DATABASE_URL=postgresql://miuser:mipass@127.0.0.1:5433/mediaimpact pytest tests/test_db.py -v
 
 Oder mit dem Default-Wert (wenn Credentials nicht geändert wurden):
     pytest tests/test_db.py -v
@@ -19,7 +19,7 @@ import pytest
 from db import SourceDoc, apply_schema, write_extraction_result
 from schemas import ExtractionResult, PriceRule
 
-_DEFAULT_DB = "postgresql://miuser:mipass@localhost:5433/mediaimpact"
+_DEFAULT_DB = "postgresql://miuser:mipass@127.0.0.1:5433/mediaimpact"
 os.environ.setdefault("DATABASE_URL", _DEFAULT_DB)
 
 

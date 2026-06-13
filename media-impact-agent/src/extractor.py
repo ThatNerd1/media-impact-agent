@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from schemas import ExtractionResult
 
 MODEL = "claude-sonnet-4-6"  # Sweet Spot Preis/Qualität für Extraktion
-MAX_TOKENS = 4096
+MAX_TOKENS = 16384
 
 SYSTEM_PROMPT = """Du bist ein präziser Datenextraktor für Media-Impact-Mediaunterlagen.
 Extrahiere strukturierte Daten für ein Sales-Agent-System.
@@ -68,14 +68,20 @@ def _strip_code_fences(text: str) -> str:
     return t.strip()
 
 
-def extract_from_pdf(pdf_bytes: bytes) -> tuple[ExtractionResult | None, str | None]:
-    """Extrahiert und validiert. Gibt (Ergebnis, None) bei Erfolg zurück,
-    oder (None, Fehlertext) wenn etwas schiefgeht -> Review-Queue.
+def extract_from_pdf(
+    pdf_bytes: bytes,
+) -> tuple[ExtractionResult | None, str | None, str | None]:
+    """Extrahiert und validiert ein PDF.
+
+    Rückgabe: (Ergebnis, Fehlertext, rohe_Modellantwort)
+    - Erfolg:  (ExtractionResult, None, raw_text)
+    - Fehler:  (None, Fehlerbeschreibung, raw_text | None)
+      raw_text ist None, wenn kein API-Response empfangen wurde (Netzwerk-/Auth-Fehler).
     """
-    client = _client()
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode()
 
     try:
+        client = _client()
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
@@ -100,21 +106,37 @@ def extract_from_pdf(pdf_bytes: bytes) -> tuple[ExtractionResult | None, str | N
             }],
         )
     except anthropic.APIError as exc:
-        return None, f"API-Fehler: {exc}"
+        return None, f"API-Fehler: {exc}", None
+    except RuntimeError as exc:
+        # z. B. fehlendes ANTHROPIC_API_KEY zur Laufzeit
+        return None, f"Konfigurationsfehler: {exc}", None
 
     raw_text = "".join(
         block.text for block in response.content if block.type == "text"
     )
+
+    if response.stop_reason == "max_tokens":
+        return None, (
+            f"Modell-Ausgabe durch max_tokens={MAX_TOKENS} abgeschnitten — "
+            "das JSON ist unvollständig. "
+            "Erhöhe MAX_TOKENS oder teile das Dokument in kleinere Abschnitte auf."
+        ), raw_text
+    elif response.stop_reason != "end_turn":
+        return None, (
+            f"Unerwarteter stop_reason={response.stop_reason!r} — "
+            "das JSON ist möglicherweise unvollständig."
+        ), raw_text
+
     cleaned = _strip_code_fences(raw_text)
 
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        return None, f"Antwort war kein gültiges JSON: {exc}"
+        return None, f"Antwort war kein gültiges JSON: {exc}", raw_text
 
     try:
         result = ExtractionResult.model_validate(data)
     except ValidationError as exc:
-        return None, f"Validierung fehlgeschlagen: {exc}"
+        return None, f"Validierung fehlgeschlagen: {exc}", raw_text
 
-    return result, None
+    return result, None, raw_text

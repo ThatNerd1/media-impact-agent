@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from dataclasses import dataclass
@@ -10,8 +9,6 @@ from pathlib import Path
 from typing import Optional
 
 import psycopg
-from pydantic import ValidationError
-
 from schemas import ExtractionResult
 
 _SCHEMA_SQL = Path(__file__).parent.parent / "sql" / "schema.sql"
@@ -156,25 +153,30 @@ def apply_schema() -> None:
 def write_extraction_result(
     run_id: int,
     pdf: SourceDoc,
-    result: ExtractionResult | str,
+    result: ExtractionResult | None,
+    *,
+    error: str | None = None,
+    raw_response: str | None = None,
 ) -> str:
     """Schreibt ein Extraktionsergebnis atomar in die Datenbank.
 
     Args:
-        run_id: ID des laufenden Pipeline-Laufs (pipeline_runs.id).
-        pdf:    Metadaten des Quelldokuments (URL, Hash, Typ).
-        result: Validiertes ExtractionResult-Objekt ODER roher JSON-String
-                aus der API-Antwort (wird intern geparst und validiert).
+        run_id:       ID des laufenden Pipeline-Laufs (pipeline_runs.id).
+        pdf:          Metadaten des Quelldokuments (URL, Hash, Typ).
+        result:       Validiertes ExtractionResult-Objekt, oder None bei Fehler.
+        error:        Fehlerbeschreibung (nur bei result=None); landet in error_detail.
+        raw_response: Rohe Modellantwort (nur bei result=None); landet in raw_response.
+                      Darf None sein, wenn kein API-Response empfangen wurde.
 
     Returns:
         'skipped'  — URL + Content-Hash bereits bekannt; keine Aktion.
         'ok'       — Daten erfolgreich in die DB geschrieben.
-        'error'    — JSON- oder Validierungsfehler; Eintrag in review_queue.
+        'error'    — Extraktion fehlgeschlagen; Eintrag in review_queue.
     """
     with _connect() as conn:
         cur = conn.cursor()
 
-        # 1. Hash-Diffing + Quelldokument in einem atomaren Statement:
+        # Hash-Diffing + Quelldokument in einem atomaren Statement:
         # ON CONFLICT (url, content_hash) DO NOTHING gibt kein RETURNING zurück →
         # source_id ist None → "skipped". Kein separates SELECT nötig, kein Race.
         cur.execute(
@@ -191,31 +193,19 @@ def write_extraction_result(
             return "skipped"
         source_id: str = row[0]
 
-        # 3. Parsen + Validieren (nur bei Roh-String aus der API)
-        if isinstance(result, str):
-            raw = result
-            try:
-                extraction = ExtractionResult.model_validate(json.loads(raw))
-            except json.JSONDecodeError as exc:
-                cur.execute(
-                    """
-                    INSERT INTO review_queue (source_id, error_type, error_detail, raw_response)
-                    VALUES (%s, 'json_parse', %s, %s)
-                    """,
-                    (source_id, str(exc), raw),
-                )
-                return "error"
-            except ValidationError as exc:
-                cur.execute(
-                    """
-                    INSERT INTO review_queue (source_id, error_type, error_detail, raw_response)
-                    VALUES (%s, 'validation', %s, %s)
-                    """,
-                    (source_id, exc.json(), raw),
-                )
-                return "error"
-        else:
-            extraction = result
+        if result is None:
+            if not error:
+                raise ValueError("error muss angegeben werden, wenn result=None")
+            cur.execute(
+                """
+                INSERT INTO review_queue (source_id, error_type, error_detail, raw_response)
+                VALUES (%s, 'extractor_error', %s, %s)
+                """,
+                (source_id, error, raw_response),
+            )
+            return "error"
+
+        extraction = result
 
         # 4. Anzeigenformate + Sub-Tabellen (Buchungsoptionen, Ausschlüsse, Assets, Kombinationen)
         for fmt in extraction.ad_formats:

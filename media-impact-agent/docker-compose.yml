@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mipass}
       POSTGRES_DB: ${POSTGRES_DB:-mediaimpact}
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:5433:5432"  # Nur IPv4 — immer 127.0.0.1 statt localhost verwenden
     volumes:
       - mi-postgres-data:/var/lib/postgresql/data
     healthcheck:

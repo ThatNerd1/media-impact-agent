@@ -11,7 +11,7 @@ Ablauf:
 
 Voraussetzungen:
     DATABASE_URL      — PostgreSQL-Verbindungsstring
-                        (default: postgresql://miuser:mipass@localhost:5433/mediaimpact)
+                        (default: postgresql://miuser:mipass@127.0.0.1:5433/mediaimpact)
     ANTHROPIC_API_KEY — Claude-API-Schlüssel (muss gesetzt sein)
 
 Schnelltest mit einer lokalen PDF (kein Crawling):
@@ -40,7 +40,7 @@ from db import (
 )
 from extractor import extract_from_pdf
 
-_DEFAULT_DB = "postgresql://miuser:mipass@localhost:5433/mediaimpact"
+_DEFAULT_DB = "postgresql://miuser:mipass@127.0.0.1:5433/mediaimpact"
 os.environ.setdefault("DATABASE_URL", _DEFAULT_DB)
 
 logging.basicConfig(
@@ -75,7 +75,7 @@ def _process_pdfs(pdfs: list[DiscoveredPDF], run_id: int) -> dict[str, int]:
 
     for pdf in pdfs:
         log.info("Extrahiere: %s", pdf.filename)
-        result, err = extract_from_pdf(pdf.content)
+        result, err, raw_text = extract_from_pdf(pdf.content)
 
         source_doc = SourceDoc(
             url=pdf.url,
@@ -86,10 +86,12 @@ def _process_pdfs(pdfs: list[DiscoveredPDF], run_id: int) -> dict[str, int]:
         if result is not None:
             status = write_extraction_result(run_id, source_doc, result)
         else:
-            assert err is not None
-            # Extractor-Fehlertext als Roh-String übergeben → write_extraction_result
-            # erkennt keinen validen JSON → Eintrag landet in review_queue.
-            status = write_extraction_result(run_id, source_doc, err)
+            log.error("Extraktion fehlgeschlagen: %s", err)
+            status = write_extraction_result(
+                run_id, source_doc, None,
+                error=err,
+                raw_response=raw_text,
+            )
 
         stats[status] = stats.get(status, 0) + 1
         log.info("  → %s", status)

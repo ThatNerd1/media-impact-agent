@@ -219,7 +219,7 @@ CREATE TABLE IF NOT EXISTS review_queue (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_id       UUID NOT NULL REFERENCES source_documents(id),
     queued_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    error_type      TEXT NOT NULL,                    -- 'json_parse' | 'validation' | 'api_error'
+    error_type      TEXT NOT NULL,                    -- 'extractor_error' (alle Extraktionsfehler)
     error_detail    TEXT NOT NULL,
     raw_response    TEXT,                             -- rohe API-Antwort zur Fehleranalyse
     resolved        BOOLEAN NOT NULL DEFAULT FALSE,
