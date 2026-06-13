@@ -343,3 +343,46 @@ def write_extraction_result(
         )
 
     return "ok"
+
+
+def start_run() -> int:
+    """Legt einen neuen Pipeline-Lauf (Status 'running') an, gibt seine id zurück."""
+    with _connect() as conn:
+        return conn.execute(
+            "INSERT INTO pipeline_runs DEFAULT VALUES RETURNING id"
+        ).fetchone()[0]
+
+
+def finish_run(run_id: int, status: str, notes: Optional[str] = None) -> None:
+    """Schließt einen Pipeline-Lauf ab (Status 'done' oder 'failed')."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE pipeline_runs
+            SET status = %s, finished_at = now(), notes = %s
+            WHERE id = %s
+            """,
+            (status, notes, run_id),
+        )
+        if cur.rowcount == 0:
+            raise RuntimeError(
+                f"pipeline_runs id={run_id} nicht gefunden — "
+                "UPDATE hat keine Zeile getroffen."
+            )
+
+
+def load_known_hashes() -> dict[str, str]:
+    """Gibt Mapping url → neuester content_hash aus source_documents zurück.
+
+    Wird für Hash-Diffing genutzt: der Crawler lädt nur PDFs herunter,
+    deren Hash sich gegenüber dem letzten bekannten Wert geändert hat.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ON (url) url, content_hash
+            FROM source_documents
+            ORDER BY url, scraped_at DESC, id DESC
+            """
+        ).fetchall()
+    return {row[0]: row[1] for row in rows}
