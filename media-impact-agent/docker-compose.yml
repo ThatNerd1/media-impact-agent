@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: mi-postgres-dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-miuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mipass}
+      POSTGRES_DB: ${POSTGRES_DB:-mediaimpact}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - mi-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-miuser} -d ${POSTGRES_DB:-mediaimpact}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  mi-postgres-data:
