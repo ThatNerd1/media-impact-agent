@@ -174,6 +174,86 @@ def get_prices(package_group: str | None = None) -> list[dict[str, Any]]:
     return [_clean(row) for row in rows]
 
 
+def find_channels_by_extra_attribute(
+    key: str,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> list[dict[str, Any]]:
+    """Return active channels whose extra_data contains *key*.
+
+    Optionally restrict to a numeric range [min_value, max_value].
+    Without range filters all rows with the key are returned regardless of
+    value type.  With a range filter, rows whose value is non-numeric or
+    whose key is absent are silently excluded — no crash.
+    All user-supplied values go through %s parameters; *key* is never
+    interpolated as SQL text, so JSONB-operator injection is not possible.
+    """
+    # The SELECT extracts the key's text value; its %s must come first.
+    select_params: list[Any] = [key]
+
+    where_conditions: list[str] = ["c.is_active = TRUE", "c.extra_data ? %s"]
+    where_params: list[Any] = [key]
+
+    if min_value is not None:
+        # CASE WHEN guards against optimizer reordering the regex and the cast.
+        where_conditions.append(
+            "(CASE WHEN c.extra_data->>%s ~ '^-?[0-9]+(\\.[0-9]+)?$'"
+            " THEN (c.extra_data->>%s)::numeric >= %s ELSE FALSE END)"
+        )
+        where_params.extend([key, key, min_value])
+    if max_value is not None:
+        where_conditions.append(
+            "(CASE WHEN c.extra_data->>%s ~ '^-?[0-9]+(\\.[0-9]+)?$'"
+            " THEN (c.extra_data->>%s)::numeric <= %s ELSE FALSE END)"
+        )
+        where_params.extend([key, key, max_value])
+
+    sql = (
+        "SELECT c.name, c.reach_multiscreen_mio,"
+        " c.extra_data->>%s AS matched_value"
+        " FROM channels c"
+        f" WHERE {' AND '.join(where_conditions)}"
+        " ORDER BY c.name"
+    )
+
+    with _get_conn() as conn:
+        rows = conn.execute(sql, select_params + where_params).fetchall()
+    return [_clean(row) for row in rows]
+
+
+def get_extra_data(
+    object_type: str,
+    name: str,
+) -> dict[str, Any] | None:
+    """Return the complete extra_data dict for a channel or format.
+
+    object_type: 'channel' or 'format' (anything else → None).
+    name: channel name (case-insensitive) or format name / format_key.
+    Returns None if not found.
+    """
+    if object_type == "channel":
+        sql = (
+            "SELECT extra_data FROM channels"
+            " WHERE name ILIKE %s AND is_active = TRUE LIMIT 1"
+        )
+        params: tuple[Any, ...] = (name,)
+    elif object_type == "format":
+        # Prefer exact format_key match over name match; break ties by name.
+        sql = (
+            "SELECT extra_data FROM ad_formats"
+            " WHERE (format_key = %s OR name ILIKE %s) AND is_active = TRUE"
+            " ORDER BY (format_key = %s) DESC, name"
+            " LIMIT 1"
+        )
+        params = (name, name, name)
+    else:
+        return None
+
+    with _get_conn() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return row["extra_data"] if row else None
+
+
 def find_portals_by_topic(topic: str) -> list[dict[str, Any]]:
     """Return channel portals whose sub_areas TEXT[] contains a value matching topic.
 

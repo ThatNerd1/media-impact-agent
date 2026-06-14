@@ -15,8 +15,10 @@ import pytest
 
 from agent_tools import (
     find_channels_by_demographics,
+    find_channels_by_extra_attribute,
     find_formats,
     find_portals_by_topic,
+    get_extra_data,
     get_prices,
 )
 
@@ -246,3 +248,208 @@ def test_find_portals_case_insensitive():
     upper = find_portals_by_topic("SPORT")
     lower = find_portals_by_topic("sport")
     assert upper == lower
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for extra_data tests
+# ---------------------------------------------------------------------------
+
+_FX_CHANNEL_NAME = "_fixture_extra_data_channel"
+_FX_CHANNEL_EXTRA = {
+    "female_pct": 65,
+    "age_20_39_pct": 45,
+    "age_16_29_pct": 30,
+    "data_source": "IVW",
+}
+
+_FX_FORMAT_KEY2 = "_fixture_extra_data_format"
+_FX_FORMAT_EXTRA = {
+    "material_deadline_standard_days": 5,
+    "surcharge_eur": 500,
+    "category": "Premium",
+    "format_group": "Impactful",
+}
+_FX_URL2 = "https://test.example/extra-data-fixture"
+_FX_HASH2 = "abc111fixture111extra111data"
+
+
+@pytest.fixture
+def _extra_data_channel():
+    """Insert a channel with known extra_data, then clean up."""
+    db_url = os.environ["DATABASE_URL"]
+    assert "mediaimpact_test" in db_url
+
+    with psycopg.connect(db_url) as conn:
+        conn.execute("DELETE FROM channels WHERE name = %s", (_FX_CHANNEL_NAME,))
+
+    run_id = source_id = None
+    with psycopg.connect(db_url) as conn:
+        (run_id,) = conn.execute(
+            "INSERT INTO pipeline_runs (status) VALUES ('done') RETURNING id"
+        ).fetchone()
+        (source_id,) = conn.execute(
+            """INSERT INTO source_documents (run_id, url, doc_type, content_hash, extraction_ok)
+               VALUES (%s, %s, 'pdf', %s, TRUE) RETURNING id""",
+            (run_id, _FX_URL2, _FX_HASH2),
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO channels (source_id, name, extra_data)
+               VALUES (%s, %s, %s)""",
+            (source_id, _FX_CHANNEL_NAME, psycopg.types.json.Jsonb(_FX_CHANNEL_EXTRA)),
+        )
+
+    yield _FX_CHANNEL_NAME
+
+    with psycopg.connect(db_url) as conn:
+        conn.execute("DELETE FROM channels WHERE name = %s", (_FX_CHANNEL_NAME,))
+        conn.execute("DELETE FROM source_documents WHERE id = %s", (source_id,))
+        conn.execute("DELETE FROM pipeline_runs WHERE id = %s", (run_id,))
+
+
+@pytest.fixture
+def _extra_data_format():
+    """Insert a format with known extra_data, then clean up."""
+    db_url = os.environ["DATABASE_URL"]
+    assert "mediaimpact_test" in db_url
+
+    _url = "https://test.example/extra-data-format-fixture"
+    _hash = "abc222fixture222format222extra"
+
+    with psycopg.connect(db_url) as conn:
+        conn.execute("DELETE FROM ad_formats WHERE format_key = %s", (_FX_FORMAT_KEY2,))
+        conn.execute(
+            "DELETE FROM source_documents WHERE url = %s AND content_hash = %s",
+            (_url, _hash),
+        )
+
+    run_id = source_id = None
+    with psycopg.connect(db_url) as conn:
+        (run_id,) = conn.execute(
+            "INSERT INTO pipeline_runs (status) VALUES ('done') RETURNING id"
+        ).fetchone()
+        (source_id,) = conn.execute(
+            """INSERT INTO source_documents (run_id, url, doc_type, content_hash, extraction_ok)
+               VALUES (%s, %s, 'pdf', %s, TRUE) RETURNING id""",
+            (run_id, _url, _hash),
+        ).fetchone()
+        conn.execute(
+            """INSERT INTO ad_formats (source_id, format_key, name, device, extra_data)
+               VALUES (%s, %s, 'Fixture Extra-Data Format', 'stationary', %s)""",
+            (source_id, _FX_FORMAT_KEY2,
+             psycopg.types.json.Jsonb(_FX_FORMAT_EXTRA)),
+        )
+
+    yield _FX_FORMAT_KEY2
+
+    with psycopg.connect(db_url) as conn:
+        conn.execute("DELETE FROM ad_formats WHERE format_key = %s", (_FX_FORMAT_KEY2,))
+        conn.execute("DELETE FROM source_documents WHERE id = %s", (source_id,))
+        conn.execute("DELETE FROM pipeline_runs WHERE id = %s", (run_id,))
+
+
+# ---------------------------------------------------------------------------
+# find_channels_by_extra_attribute
+# ---------------------------------------------------------------------------
+
+def test_find_channels_by_extra_attribute_key_present(_extra_data_channel):
+    rows = find_channels_by_extra_attribute("female_pct")
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME in names
+
+
+def test_find_channels_by_extra_attribute_result_shape(_extra_data_channel):
+    rows = find_channels_by_extra_attribute("female_pct")
+    for row in rows:
+        assert "name" in row
+        assert "matched_value" in row
+        assert "reach_multiscreen_mio" in row
+
+
+def test_find_channels_by_extra_attribute_min_value_match(_extra_data_channel):
+    # female_pct = 65, so min_value=60 must include the fixture channel.
+    rows = find_channels_by_extra_attribute("female_pct", min_value=60)
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME in names
+
+
+def test_find_channels_by_extra_attribute_min_value_no_match(_extra_data_channel):
+    # female_pct = 65, so min_value=70 must exclude the fixture channel.
+    rows = find_channels_by_extra_attribute("female_pct", min_value=70)
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME not in names
+
+
+def test_find_channels_by_extra_attribute_max_value_match(_extra_data_channel):
+    rows = find_channels_by_extra_attribute("female_pct", max_value=70)
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME in names
+
+
+def test_find_channels_by_extra_attribute_max_value_no_match(_extra_data_channel):
+    rows = find_channels_by_extra_attribute("female_pct", max_value=60)
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME not in names
+
+
+def test_find_channels_by_extra_attribute_missing_key_returns_empty(_extra_data_channel):
+    rows = find_channels_by_extra_attribute("nonexistent_key_xyz")
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME not in names
+
+
+def test_find_channels_by_extra_attribute_non_numeric_value_no_crash(_extra_data_channel):
+    # data_source = "IVW" — a string, not numeric.
+    # Passing min_value must not raise; the channel is simply excluded.
+    rows = find_channels_by_extra_attribute("data_source", min_value=0)
+    assert isinstance(rows, list)
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME not in names
+
+
+def test_find_channels_by_extra_attribute_non_numeric_no_range(_extra_data_channel):
+    # Without numeric filter, non-numeric keys still work (key-existence check).
+    rows = find_channels_by_extra_attribute("data_source")
+    names = [r["name"] for r in rows]
+    assert _FX_CHANNEL_NAME in names
+
+
+# ---------------------------------------------------------------------------
+# get_extra_data
+# ---------------------------------------------------------------------------
+
+def test_get_extra_data_channel(_extra_data_channel):
+    result = get_extra_data("channel", _FX_CHANNEL_NAME)
+    assert result is not None
+    assert result["female_pct"] == 65
+    assert result["data_source"] == "IVW"
+
+
+def test_get_extra_data_channel_case_insensitive(_extra_data_channel):
+    result = get_extra_data("channel", _FX_CHANNEL_NAME.upper())
+    assert result is not None
+    assert "female_pct" in result
+
+
+def test_get_extra_data_format(_extra_data_format):
+    # Look up by format_key (exact match)
+    result = get_extra_data("format", _FX_FORMAT_KEY2)
+    assert result is not None
+    assert result["surcharge_eur"] == 500
+    assert result["category"] == "Premium"
+
+
+def test_get_extra_data_format_by_name(_extra_data_format):
+    # Look up by human-readable name (ILIKE match)
+    result = get_extra_data("format", "Fixture Extra-Data Format")
+    assert result is not None
+    assert result["format_group"] == "Impactful"
+
+
+def test_get_extra_data_not_found(_extra_data_channel):
+    result = get_extra_data("channel", "XYZZY_NONEXISTENT_CHANNEL_42")
+    assert result is None
+
+
+def test_get_extra_data_unknown_type():
+    result = get_extra_data("brand", "anything")
+    assert result is None

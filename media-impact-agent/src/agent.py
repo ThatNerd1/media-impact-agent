@@ -14,8 +14,10 @@ import anthropic
 
 from agent_tools import (
     find_channels_by_demographics,
+    find_channels_by_extra_attribute,
     find_formats,
     find_portals_by_topic,
+    get_extra_data,
     get_prices,
 )
 
@@ -25,9 +27,11 @@ from agent_tools import (
 
 _TOOL_FN_MAP = {
     "find_channels_by_demographics": find_channels_by_demographics,
+    "find_channels_by_extra_attribute": find_channels_by_extra_attribute,
     "find_formats": find_formats,
     "get_prices": get_prices,
     "find_portals_by_topic": find_portals_by_topic,
+    "get_extra_data": get_extra_data,
 }
 
 TOOLS: list[dict[str, Any]] = [
@@ -129,6 +133,65 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "find_channels_by_extra_attribute",
+        "description": (
+            "Sucht Channels, deren extra_data ein bestimmtes Zusatzfeld enthält. "
+            "Typische Felder: female_pct, age_20_39_pct, age_16_29_pct, "
+            "age_30_39_pct, data_source. "
+            "Gibt Channel-Name, Multiscreen-Reichweite und den Wert des gesuchten "
+            "Felds zurück. Optionale numerische Ober-/Untergrenze filterbar."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": (
+                        "Name des extra_data-Felds, z. B. 'female_pct', "
+                        "'age_20_39_pct', 'data_source'."
+                    ),
+                },
+                "min_value": {
+                    "type": "number",
+                    "description": "Numerischer Mindestwert (inkl.), z. B. 60 für ≥ 60 %.",
+                },
+                "max_value": {
+                    "type": "number",
+                    "description": "Numerischer Maximalwert (inkl.).",
+                },
+            },
+            "required": ["key"],
+        },
+    },
+    {
+        "name": "get_extra_data",
+        "description": (
+            "Gibt das vollständige extra_data-Dict eines Channels oder Formats zurück. "
+            "Nützlich für detaillierte Nachschläge: Aufpreise, Materialfristen, "
+            "Datenquellen, Altersgruppen-Werte. "
+            "Gibt null zurück wenn nicht gefunden."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "object_type": {
+                    "type": "string",
+                    "enum": ["channel", "format"],
+                    "description": "'channel' für Channels, 'format' für Anzeigenformate.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Name des Channels (z. B. 'Technology') oder "
+                        "Format-Name bzw. format_key (z. B. 'Fireplace' oder "
+                        "'dynamic_fireplace')."
+                    ),
+                },
+            },
+            "required": ["object_type", "name"],
+        },
+    },
+    {
         "name": "find_portals_by_topic",
         "description": (
             "Findet Channel-Portale (Marke + Channel-Kombination), deren sub_areas-Array "
@@ -161,9 +224,16 @@ den größten deutschen Digital-Vermarkter (Axel Springer, Funke, u.a.).
 Deine Aufgabe ist es, Werbekunden bei der Auswahl der optimalen Channels, \
 Anzeigenformate und Budgets zu beraten.
 
+Zusätzliche Detaildaten in extra_data: Channels können Felder wie female_pct, \
+age_16_29_pct, age_20_39_pct, age_30_39_pct und data_source enthalten. \
+Formate können material_deadline_standard_days, surcharge_eur, category und \
+format_group enthalten. Nutze find_channels_by_extra_attribute und \
+get_extra_data, wenn eine Frage nach Frauenanteil, Altersgruppen, Aufpreisen, \
+Materialfristen oder ähnlichen Zusatzdaten verlangt.
+
 Verbindliche Regeln:
 1. Antworte AUSSCHLIESSLICH auf Basis der Tool-Ergebnisse. Erfinde niemals \
-   Reichweiten, Demografie-Werte, Format-Namen oder Preise.
+   Reichweiten, Demografie-Werte, Format-Namen, Preise oder extra_data-Felder.
 2. Wenn ein Tool leere Ergebnisse liefert, sage das klar und empfehle \
    alternative Filter — aber erfinde keine Daten.
 3. Begründe jede Empfehlung konkret: nenne Reichweite, Demografie-Werte \
