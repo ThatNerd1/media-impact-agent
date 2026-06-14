@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from typing import Any
 
 import anthropic
@@ -255,10 +256,31 @@ def _call_tool(name: str, tool_input: dict[str, Any]) -> str:
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
-def run_agent(user_query: str, *, max_iterations: int = 10) -> str:
-    """Run the sales agent and return the final text recommendation."""
+def stream_agent(
+    user_query: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    max_iterations: int = 10,
+) -> Iterator[str]:
+    """Generator: yields text chunks produced by the agent loop.
+
+    Yields one chunk per end_turn response (the full assistant reply).
+
+    TODO STREAMING: Switch client.messages.create → client.messages.stream
+    and yield event.delta.text inside that context manager. The caller
+    interface stays identical; only this function body changes.
+
+    Args:
+        user_query:     The current user question.
+        history:        Prior conversation turns as message dicts (role/content).
+                        Pass [] or None for a fresh conversation (first API version).
+                        TODO CONVERSATION: /ask v2 will populate this from the
+                        request body so the agent retains multi-turn context.
+        max_iterations: Safety cap on tool-use loops.
+    """
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    messages: list[dict[str, Any]] = [{"role": "user", "content": user_query}]
+    messages: list[dict[str, Any]] = list(history or [])
+    messages.append({"role": "user", "content": user_query})
 
     for _ in range(max_iterations):
         response = client.messages.create(
@@ -275,8 +297,8 @@ def run_agent(user_query: str, *, max_iterations: int = 10) -> str:
         if response.stop_reason == "end_turn":
             for block in response.content:
                 if block.type == "text":
-                    return block.text
-            return ""
+                    yield block.text
+            return
 
         if response.stop_reason != "tool_use":
             break
@@ -296,4 +318,20 @@ def run_agent(user_query: str, *, max_iterations: int = 10) -> str:
 
         messages.append({"role": "user", "content": tool_results})
 
-    return "Entschuldigung, ich konnte keine abschließende Antwort generieren."
+    yield "Entschuldigung, ich konnte keine abschließende Antwort generieren."
+
+
+def run_agent(
+    user_query: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    max_iterations: int = 10,
+) -> str:
+    """Collect all chunks from stream_agent into a single string.
+
+    CLI and first API version use this. Streaming endpoints call stream_agent
+    directly and forward chunks to the HTTP response instead of joining them.
+    """
+    return "".join(
+        stream_agent(user_query, history=history, max_iterations=max_iterations)
+    )
