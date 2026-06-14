@@ -34,6 +34,7 @@ from db import (
     SourceDoc,
     apply_schema,
     finish_run,
+    is_already_extracted,
     load_known_hashes,
     start_run,
     write_extraction_result,
@@ -74,14 +75,20 @@ def _process_pdfs(pdfs: list[DiscoveredPDF], run_id: int) -> dict[str, int]:
     stats: dict[str, int] = {"ok": 0, "skipped": 0, "error": 0}
 
     for pdf in pdfs:
-        log.info("Extrahiere: %s", pdf.filename)
-        result, err, raw_text = extract_from_pdf(pdf.content)
+        # Hash-Prüfung VOR dem teuren API-Aufruf — gilt in beiden Modi.
+        if is_already_extracted(pdf.url, pdf.content_hash):
+            log.info("Überspringe (bereits extrahiert): %s", pdf.filename)
+            stats["skipped"] += 1
+            continue
 
         source_doc = SourceDoc(
             url=pdf.url,
             content_hash=pdf.content_hash,
             filename=pdf.filename,
         )
+
+        log.info("Extrahiere: %s", pdf.filename)
+        result, err, raw_text = extract_from_pdf(pdf.content)
 
         if result is not None:
             status = write_extraction_result(run_id, source_doc, result)

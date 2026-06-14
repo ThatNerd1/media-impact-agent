@@ -16,8 +16,8 @@ import os
 import psycopg
 import pytest
 
-from db import SourceDoc, apply_schema, write_extraction_result
-from schemas import ExtractionResult, PriceRule
+from db import SourceDoc, apply_schema, load_known_hashes, write_extraction_result
+from schemas import AdFormat, ExtractionResult, PriceRule
 
 _DEFAULT_DB = "postgresql://miuser:mipass@127.0.0.1:5433/mediaimpact"
 os.environ.setdefault("DATABASE_URL", _DEFAULT_DB)
@@ -125,3 +125,79 @@ def test_price_rule_updated():
     assert old[1] is not None, "Alte Zeile muss geschlossen sein (valid_until IS NOT NULL)"
     assert current[0] == 7500, "Neue Zeile: 75 €"
     assert current[1] is None, "Neue Zeile muss offen sein (valid_until IS NULL)"
+
+
+# ---------------------------------------------------------------------------
+# Hash-Skip-Logik: nur nach ERFOLGREICHER Extraktion als "fertig" markiert
+# ---------------------------------------------------------------------------
+
+def test_failed_extraction_hash_not_blocked():
+    """Fehlgeschlagene Extraktion blockiert keinen Retry mit demselben Hash."""
+    run1 = _insert_run()
+    status1 = write_extraction_result(run1, _pdf("_fail"), None, error="Test-Fehler")
+    assert status1 == "error"
+
+    run2 = _insert_run()
+    status2 = write_extraction_result(run2, _pdf("_fail"), None, error="Test-Fehler")
+    assert status2 == "error", (
+        f"Erwartet 'error', bekam '{status2}' — "
+        "fehlgeschlagene Extraktion darf Retry nicht als 'skipped' blockieren"
+    )
+
+
+def test_successful_extraction_skips_same_hash():
+    """Nach erfolgreicher Extraktion wird dieselbe URL+Hash beim nächsten Lauf übersprungen."""
+    run1 = _insert_run()
+    status1 = write_extraction_result(run1, _pdf("_succ"), _result("RoB", "RoC", 60))
+    assert status1 == "ok"
+
+    run2 = _insert_run()
+    status2 = write_extraction_result(run2, _pdf("_succ"), _result("RoB", "RoC", 60))
+    assert status2 == "skipped"
+
+
+def test_load_known_hashes_excludes_failed():
+    """load_known_hashes gibt nur Hashes erfolgreich extrahierter Dokumente zurück."""
+    run_id = _insert_run()
+    write_extraction_result(run_id, _pdf("_lkh_fail"), None, error="Test")
+
+    hashes = load_known_hashes()
+    assert _pdf("_lkh_fail").url not in hashes
+
+
+def test_load_known_hashes_includes_successful():
+    """load_known_hashes enthält Hashes von Dokumenten mit extraction_ok = TRUE."""
+    run_id = _insert_run()
+    doc = _pdf("_lkh_ok")
+    write_extraction_result(run_id, doc, _result("BillboardLKH", "RoC", 60))
+
+    hashes = load_known_hashes()
+    assert doc.url in hashes
+    assert hashes[doc.url] == doc.content_hash
+
+
+# ---------------------------------------------------------------------------
+# Format-Deduplizierung über ON CONFLICT (format_key)
+# ---------------------------------------------------------------------------
+
+def test_format_deduplication_across_pdfs():
+    """Dasselbe Format aus zwei PDFs → eine Zeile in ad_formats, aktualisierter Name."""
+    run1 = _insert_run()
+    r1 = ExtractionResult(
+        ad_formats=[AdFormat(format_key="billboard_dedup", name="Billboard", device="stationary")]
+    )
+    write_extraction_result(run1, _pdf("_fmt1"), r1)
+
+    run2 = _insert_run()
+    r2 = ExtractionResult(
+        ad_formats=[AdFormat(format_key="billboard_dedup", name="Billboard v2", device="stationary")]
+    )
+    write_extraction_result(run2, _pdf("_fmt2"), r2)
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        rows = conn.execute(
+            "SELECT name FROM ad_formats WHERE format_key = 'billboard_dedup'"
+        ).fetchall()
+
+    assert len(rows) == 1, f"Erwartet 1 Zeile, gefunden {len(rows)}"
+    assert rows[0][0] == "Billboard v2", "Name muss auf neuesten Wert aktualisiert sein"

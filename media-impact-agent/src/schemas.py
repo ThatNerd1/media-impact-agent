@@ -36,6 +36,22 @@ class AdFormat(BaseModel):
     required_assets: list[str] = Field(default_factory=list)
     goes_well_with: list[str] = Field(default_factory=list)
 
+    @field_validator("booking_options", "exclusions", "required_assets", "goes_well_with", mode="before")
+    @classmethod
+    def coerce_to_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [item.strip() for item in v.split(",") if item.strip()]
+        return v
+
+    @field_validator("programmatic", mode="before")
+    @classmethod
+    def coerce_programmatic(cls, v):
+        if isinstance(v, bool):
+            return "yes" if v else "no"
+        return v
+
     @field_validator("ctr_pct")
     @classmethod
     def ctr_in_range(cls, v: Optional[float]) -> Optional[float]:
@@ -47,9 +63,18 @@ class AdFormat(BaseModel):
 class ChannelPortal(BaseModel):
     """Eine Marke (Portal) innerhalb eines Channels."""
     brand: str
-    sub_areas: Optional[str] = None
+    sub_areas: list[str] = Field(default_factory=list)
     stationary: bool = False
     mobile_avail: Literal["yes", "only_mew", "no"] = "no"
+
+    @field_validator("sub_areas", mode="before")
+    @classmethod
+    def coerce_sub_areas(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        return v
 
 
 class ChannelDemographics(BaseModel):

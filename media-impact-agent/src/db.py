@@ -176,22 +176,29 @@ def write_extraction_result(
     with _connect() as conn:
         cur = conn.cursor()
 
-        # Hash-Diffing + Quelldokument in einem atomaren Statement:
-        # ON CONFLICT (url, content_hash) DO NOTHING gibt kein RETURNING zurück →
-        # source_id ist None → "skipped". Kein separates SELECT nötig, kein Race.
+        # Skip nur wenn (url, content_hash) bereits ERFOLGREICH extrahiert wurde.
+        # Fehlgeschlagene Läufe (extraction_ok = FALSE) blockieren keinen Retry:
+        # ein neues source_documents-Objekt wird angelegt, das nach Erfolg auf TRUE gesetzt wird.
+        cur.execute(
+            """
+            SELECT id FROM source_documents
+            WHERE url = %s AND content_hash = %s AND extraction_ok = TRUE
+            LIMIT 1
+            """,
+            (pdf.url, pdf.content_hash),
+        )
+        if cur.fetchone():
+            return "skipped"
+
         cur.execute(
             """
             INSERT INTO source_documents (run_id, url, filename, doc_type, content_hash)
             VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (url, content_hash) DO NOTHING
             RETURNING id
             """,
             (run_id, pdf.url, pdf.filename, pdf.doc_type, pdf.content_hash),
         )
-        row = cur.fetchone()
-        if row is None:
-            return "skipped"
-        source_id: str = row[0]
+        source_id: str = cur.fetchone()[0]
 
         if result is None:
             if not error:
@@ -216,6 +223,7 @@ def write_extraction_result(
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (format_key) DO UPDATE
                     SET name         = EXCLUDED.name,
+                        device       = EXCLUDED.device,
                         source_id    = EXCLUDED.source_id,
                         description  = EXCLUDED.description,
                         ctr_pct      = EXCLUDED.ctr_pct,
@@ -361,6 +369,20 @@ def finish_run(run_id: int, status: str, notes: Optional[str] = None) -> None:
             )
 
 
+def is_already_extracted(url: str, content_hash: str) -> bool:
+    """True wenn URL+Hash bereits erfolgreich extrahiert wurde (extraction_ok = TRUE)."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM source_documents
+            WHERE url = %s AND content_hash = %s AND extraction_ok = TRUE
+            LIMIT 1
+            """,
+            (url, content_hash),
+        ).fetchone()
+    return row is not None
+
+
 def load_known_hashes() -> dict[str, str]:
     """Gibt Mapping url → neuester content_hash aus source_documents zurück.
 
@@ -372,6 +394,7 @@ def load_known_hashes() -> dict[str, str]:
             """
             SELECT DISTINCT ON (url) url, content_hash
             FROM source_documents
+            WHERE extraction_ok = TRUE
             ORDER BY url, scraped_at DESC, id DESC
             """
         ).fetchall()

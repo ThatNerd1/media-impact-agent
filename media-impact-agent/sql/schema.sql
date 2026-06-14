@@ -40,9 +40,18 @@ CREATE TABLE IF NOT EXISTS source_documents (
                     CHECK (doc_type IN ('pdf', 'html_spec')),
     content_hash    TEXT NOT NULL,                    -- SHA-256 Hex
     scraped_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    extraction_ok   BOOLEAN NOT NULL DEFAULT FALSE,   -- TRUE nach erfolgreicher Extraktion
-    UNIQUE (url, content_hash)                        -- gleiche URL + gleicher Hash = kein Duplikat
+    extraction_ok   BOOLEAN NOT NULL DEFAULT FALSE    -- TRUE nach erfolgreicher Extraktion
 );
+
+-- Für bestehende DBs: alte Inline-Constraint entfernen (idempotent).
+ALTER TABLE source_documents
+    DROP CONSTRAINT IF EXISTS source_documents_url_content_hash_key;
+
+-- Nur erfolgreich extrahierte Dokumente gelten als "fertig verarbeitet".
+-- Fehlgeschlagene Läufe (extraction_ok = FALSE) blockieren keinen Retry.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_source_documents_ok
+    ON source_documents (url, content_hash)
+    WHERE extraction_ok = TRUE;
 
 CREATE INDEX IF NOT EXISTS idx_source_documents_url
     ON source_documents (url);
@@ -154,7 +163,7 @@ CREATE TABLE IF NOT EXISTS channel_portals (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     channel_id      UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     brand_id        UUID NOT NULL REFERENCES brands(id),
-    sub_areas       TEXT,                             -- z. B. 'Digital, Games, BILD.gg'
+    sub_areas       TEXT[],                           -- z. B. ARRAY['Digital', 'Games', 'BILD.gg']
     stationary      BOOLEAN NOT NULL DEFAULT FALSE,
     mobile_avail    TEXT NOT NULL DEFAULT 'no'
                     CHECK (mobile_avail IN ('yes', 'only_mew', 'no')),
