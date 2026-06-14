@@ -78,10 +78,14 @@ CREATE TABLE IF NOT EXISTS ad_formats (
     rating_size         SMALLINT CHECK (rating_size BETWEEN 1 AND 5),
     rating_interactivity SMALLINT CHECK (rating_interactivity BETWEEN 1 AND 5),
     rating_customisability SMALLINT CHECK (rating_customisability BETWEEN 1 AND 5),
+    extra_data          JSONB NOT NULL DEFAULT '{}',  -- unerwartete Felder aus dem Dokument
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Migration: Spalte für bestehende DBs (IF NOT EXISTS ist idempotent).
+ALTER TABLE ad_formats ADD COLUMN IF NOT EXISTS extra_data JSONB NOT NULL DEFAULT '{}';
 
 -- Buchungsoptionen als eigene Tabelle (1 Format : N Optionen)
 CREATE TABLE IF NOT EXISTS format_booking_options (
@@ -152,10 +156,14 @@ CREATE TABLE IF NOT EXISTS channels (
     demo_employed_pct       SMALLINT CHECK (demo_employed_pct BETWEEN 0 AND 100),
     demo_higher_edu_pct     SMALLINT CHECK (demo_higher_edu_pct BETWEEN 0 AND 100),
     demo_hhne_3000_plus_pct SMALLINT CHECK (demo_hhne_3000_plus_pct BETWEEN 0 AND 100),
+    extra_data              JSONB NOT NULL DEFAULT '{}',  -- unerwartete Felder aus dem Dokument
     is_active               BOOLEAN NOT NULL DEFAULT TRUE,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Migration: Spalte für bestehende DBs.
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS extra_data JSONB NOT NULL DEFAULT '{}';
 
 -- Welche Marke ist in welchem Channel auf welchen Geräten?
 -- Eine Zeile = ein Portal-Eintrag (z. B. BILD im Technology-Channel, stationär + mobil)
@@ -197,6 +205,7 @@ CREATE TABLE IF NOT EXISTS price_rules (
     -- Obergrenze 12000 (120€) konsistent mit schemas.py CPM_MAX_EUR.
     cpm_euro_cent   INTEGER NOT NULL
                     CHECK (cpm_euro_cent BETWEEN 3000 AND 12000),  -- 30€–120€
+    extra_data      JSONB NOT NULL DEFAULT '{}',      -- unerwartete Felder aus dem Dokument
     valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),
     valid_until     TIMESTAMPTZ,                      -- NULL = aktuell gültig
     -- Versionierung (siehe upsert_price_rule unten):
@@ -207,6 +216,9 @@ CREATE TABLE IF NOT EXISTS price_rules (
     --   es nur EINE aktuell gültige Zeile (valid_until IS NULL) geben.
     CONSTRAINT price_rules_cpm_nonneg CHECK (cpm_euro_cent > 0)
 );
+
+-- Migration: Spalte für bestehende DBs.
+ALTER TABLE price_rules ADD COLUMN IF NOT EXISTS extra_data JSONB NOT NULL DEFAULT '{}';
 
 -- Höchstens eine aktive Preiszeile pro Format-Gruppe + Buchungsart.
 -- Verhindert die Duplikate, die bei einem wiederholten Lauf sonst entstünden.
@@ -277,7 +289,8 @@ CREATE OR REPLACE FUNCTION upsert_price_rule(
     p_package_group TEXT,
     p_booking_type  TEXT,
     p_cpm_euro_cent INTEGER,
-    p_format_id     UUID DEFAULT NULL
+    p_format_id     UUID DEFAULT NULL,
+    p_extra_data    JSONB DEFAULT '{}'
 ) RETURNS TEXT AS $$
 DECLARE
     existing_cent INTEGER;
@@ -290,13 +303,20 @@ BEGIN
 
     IF NOT FOUND THEN
         INSERT INTO price_rules
-            (source_id, format_id, package_group, booking_type, cpm_euro_cent)
+            (source_id, format_id, package_group, booking_type, cpm_euro_cent, extra_data)
         VALUES
-            (p_source_id, p_format_id, p_package_group, p_booking_type, p_cpm_euro_cent);
+            (p_source_id, p_format_id, p_package_group, p_booking_type, p_cpm_euro_cent, p_extra_data);
         RETURN 'inserted';
     END IF;
 
     IF existing_cent = p_cpm_euro_cent THEN
+        -- Preis gleich: extra_data mergen statt überschreiben, um keine bereits
+        -- erfassten Felder zu verlieren, falls ein späterer Lauf weniger liefert.
+        UPDATE price_rules
+        SET extra_data = extra_data || p_extra_data
+        WHERE package_group = p_package_group
+          AND booking_type = p_booking_type
+          AND valid_until IS NULL;
         RETURN 'unchanged';
     END IF;
 
@@ -308,9 +328,9 @@ BEGIN
       AND valid_until IS NULL;
 
     INSERT INTO price_rules
-        (source_id, format_id, package_group, booking_type, cpm_euro_cent)
+        (source_id, format_id, package_group, booking_type, cpm_euro_cent, extra_data)
     VALUES
-        (p_source_id, p_format_id, p_package_group, p_booking_type, p_cpm_euro_cent);
+        (p_source_id, p_format_id, p_package_group, p_booking_type, p_cpm_euro_cent, p_extra_data);
     RETURN 'updated';
 END;
 $$ LANGUAGE plpgsql;

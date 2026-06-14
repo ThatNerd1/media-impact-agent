@@ -7,9 +7,9 @@ Die Felder spiegeln das relationale DB-Schema (ad_formats, channels, price_rules
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Fachliche Grenzen, abgeleitet aus den realen Dokumenten (CPM-Preisliste,
 # CTR-Werte). Werte außerhalb dieser Bereiche sind ein Warnsignal für eine
@@ -35,6 +35,7 @@ class AdFormat(BaseModel):
     programmatic: Optional[str] = None
     required_assets: list[str] = Field(default_factory=list)
     goes_well_with: list[str] = Field(default_factory=list)
+    extra_data: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("booking_options", "exclusions", "required_assets", "goes_well_with", mode="before")
     @classmethod
@@ -76,6 +77,16 @@ class ChannelPortal(BaseModel):
             return [v]
         return v
 
+    @field_validator("stationary", mode="before")
+    @classmethod
+    def coerce_stationary(cls, v):
+        return False if v is None else v
+
+    @field_validator("mobile_avail", mode="before")
+    @classmethod
+    def coerce_mobile_avail(cls, v):
+        return "no" if v is None else v
+
 
 class ChannelDemographics(BaseModel):
     male_pct: Optional[int] = None
@@ -99,6 +110,7 @@ class Channel(BaseModel):
     reach_stationary_mio: Optional[float] = None
     reach_mobile_mio: Optional[float] = None
     reach_multiscreen_mio: Optional[float] = None
+    extra_data: dict[str, Any] = Field(default_factory=dict)
 
 
 class PriceRule(BaseModel):
@@ -106,6 +118,7 @@ class PriceRule(BaseModel):
     package_group: str = Field(..., description="z. B. 'Mobile Content Ad 2:1'")
     booking_type: str = Field(..., description="z. B. 'RoC' (Run of Channel)")
     cpm_euro: int
+    extra_data: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("cpm_euro")
     @classmethod
@@ -120,3 +133,17 @@ class ExtractionResult(BaseModel):
     ad_formats: list[AdFormat] = Field(default_factory=list)
     channels: list[Channel] = Field(default_factory=list)
     price_rules: list[PriceRule] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def filter_price_rules_without_cpm(cls, data):
+        if isinstance(data, dict):
+            rules = data.get("price_rules")
+            if isinstance(rules, list):
+                filtered = [
+                    pr for pr in rules
+                    if not isinstance(pr, dict) or pr.get("cpm_euro") is not None
+                ]
+                if len(filtered) != len(rules):
+                    data = {**data, "price_rules": filtered}
+        return data

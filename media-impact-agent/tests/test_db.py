@@ -15,7 +15,7 @@ import psycopg
 import pytest
 
 from db import SourceDoc, load_known_hashes, write_extraction_result
-from schemas import AdFormat, ExtractionResult, PriceRule
+from schemas import AdFormat, Channel, ChannelPortal, ExtractionResult, PriceRule
 
 
 @pytest.fixture(autouse=True)
@@ -190,3 +190,157 @@ def test_format_deduplication_across_pdfs():
 
     assert len(rows) == 1, f"Erwartet 1 Zeile, gefunden {len(rows)}"
     assert rows[0][0] == "Billboard v2", "Name muss auf neuesten Wert aktualisiert sein"
+
+
+# ---------------------------------------------------------------------------
+# extra_data JSONB Round-Trip
+# ---------------------------------------------------------------------------
+
+def test_extra_data_ad_format_roundtrip():
+    """extra_data eines AdFormat wird korrekt als JSONB geschrieben und zurückgelesen."""
+    run_id = _insert_run()
+    extra = {"age_group": "18-49", "affinity_score": 4.2, "notes": "test"}
+    r = ExtractionResult(
+        ad_formats=[AdFormat(
+            format_key="extra_test_format",
+            name="Extra Format",
+            device="stationary",
+            extra_data=extra,
+        )]
+    )
+    status = write_extraction_result(run_id, _pdf("_extra_fmt"), r)
+    assert status == "ok"
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        row = conn.execute(
+            "SELECT extra_data FROM ad_formats WHERE format_key = 'extra_test_format'"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == extra, f"extra_data round-trip fehlgeschlagen: {row[0]!r}"
+
+
+def test_extra_data_channel_roundtrip():
+    """extra_data eines Channel wird korrekt als JSONB geschrieben und zurückgelesen."""
+    run_id = _insert_run()
+    extra = {"target_affinity": "sports fans", "seasonal_boost": True}
+    r = ExtractionResult(
+        channels=[Channel(name="ExtraChannel", extra_data=extra)]
+    )
+    status = write_extraction_result(run_id, _pdf("_extra_ch"), r)
+    assert status == "ok"
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        row = conn.execute(
+            "SELECT extra_data FROM channels WHERE name = 'ExtraChannel'"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == extra, f"extra_data round-trip fehlgeschlagen: {row[0]!r}"
+
+
+def test_extra_data_price_rule_roundtrip():
+    """extra_data einer PriceRule wird korrekt als JSONB geschrieben und zurückgelesen."""
+    run_id = _insert_run()
+    extra = {"discount_note": "Mengenrabatt ab 5 Buchungen", "source_table": "Seite 12"}
+    r = ExtractionResult(
+        price_rules=[PriceRule(
+            package_group="Extra Package",
+            booking_type="RoS",
+            cpm_euro=45,
+            extra_data=extra,
+        )]
+    )
+    status = write_extraction_result(run_id, _pdf("_extra_pr"), r)
+    assert status == "ok"
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        row = conn.execute(
+            "SELECT extra_data FROM price_rules"
+            " WHERE package_group = 'Extra Package' AND booking_type = 'RoS'"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == extra, f"extra_data round-trip fehlgeschlagen: {row[0]!r}"
+
+
+# ---------------------------------------------------------------------------
+# Validierungs-Fixes: null-cpm price_rules und null-stationary ChannelPortal
+# ---------------------------------------------------------------------------
+
+def test_price_rule_null_cpm_filtered_from_extraction_result():
+    """price_rules mit cpm_euro=null werden vor der Pydantic-Validierung herausgefiltert."""
+    data = {
+        "price_rules": [
+            {"package_group": "Null Pkg", "booking_type": "RoC", "cpm_euro": None},
+            {"package_group": "Valid Pkg", "booking_type": "RoC", "cpm_euro": 50},
+        ]
+    }
+    result = ExtractionResult.model_validate(data)
+    assert len(result.price_rules) == 1
+    assert result.price_rules[0].package_group == "Valid Pkg"
+
+
+def test_price_rule_all_null_cpm_written_as_ok_no_rows():
+    """ExtractionResult mit ausschließlich null-cpm-Regeln: DB-Write ok, price_rules leer."""
+    run_id = _insert_run()
+    data = {"price_rules": [{"package_group": "Null Pkg", "booking_type": "RoC", "cpm_euro": None}]}
+    result = ExtractionResult.model_validate(data)
+    status = write_extraction_result(run_id, _pdf("_null_cpm"), result)
+    assert status == "ok"
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM price_rules").fetchone()[0]
+    assert count == 0, f"Keine price_rules erwartet (null cpm gefiltert), aber {count} gefunden"
+
+
+def test_channel_portal_stationary_none_coerced_to_false():
+    """stationary=None in ChannelPortal wird zu False koerced."""
+    portal = ChannelPortal.model_validate({"brand": "Focus", "stationary": None})
+    assert portal.stationary is False
+
+
+def test_channel_portal_mobile_avail_none_coerced_to_no():
+    """mobile_avail=None in ChannelPortal wird zu 'no' koerced."""
+    portal = ChannelPortal.model_validate({"brand": "Focus", "mobile_avail": None})
+    assert portal.mobile_avail == "no"
+
+
+def test_channel_portal_stationary_none_stored_as_false():
+    """ChannelPortal mit stationary=null aus Modell: wird in DB als FALSE gespeichert."""
+    run_id = _insert_run()
+    data = {
+        "channels": [{
+            "name": "NullStationaryChannel",
+            "portals": [{"brand": "FocusNull", "stationary": None, "mobile_avail": "no"}],
+        }]
+    }
+    result = ExtractionResult.model_validate(data)
+    status = write_extraction_result(run_id, _pdf("_null_stat"), result)
+    assert status == "ok"
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        row = conn.execute(
+            "SELECT cp.stationary FROM channel_portals cp"
+            " JOIN brands b ON b.id = cp.brand_id"
+            " WHERE b.name = 'FocusNull'"
+        ).fetchone()
+    assert row is not None
+    assert row[0] is False, f"Erwartet False (stationary=null→False), got {row[0]}"
+
+
+def test_extra_data_empty_dict_stored_as_empty_object():
+    """extra_data={} (default) wird als leeres JSON-Objekt gespeichert, nicht als null."""
+    run_id = _insert_run()
+    r = ExtractionResult(
+        ad_formats=[AdFormat(format_key="noextra_format", name="No Extra", device="mobile")]
+    )
+    write_extraction_result(run_id, _pdf("_noextra"), r)
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        row = conn.execute(
+            "SELECT extra_data FROM ad_formats WHERE format_key = 'noextra_format'"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == {}, f"Leeres extra_data erwartet, got {row[0]!r}"

@@ -30,20 +30,30 @@ Regeln:
 - Bei der CPM-Preismatrix: jede Zeile/Spalte-Kombination als eigene price_rule.
   Die Achsen (Format-Gruppe und Paket) müssen aus den Schlüsseln klar hervorgehen.
 - Erfinde niemals Werte. Lieber null als eine plausible Vermutung.
+- VOLLSTÄNDIGKEIT: Erfasse das Dokument lückenlos. Bekannte Informationen kommen
+  in die dafür vorgesehenen Felder. ALLES andere (unerwartete Metriken,
+  Altersgruppen, Affinitäten, Sonderkonditionen, Zusatzangaben jeder Art), das
+  im Dokument steht und keinem festen Feld entspricht, gehört als strukturiertes
+  key-value-Objekt in "extra_data". Lieber ein Feld zu viel in extra_data als
+  eines auslassen. Erfinde aber keine Werte — nur erfassen, was im Dokument steht.
 
 Das JSON muss dieser Struktur folgen:
 {
   "ad_formats": [{"format_key","name","device","ctr_pct","description",
                   "booking_options","exclusions","programmatic",
-                  "required_assets","goes_well_with"}],
+                  "required_assets","goes_well_with",
+                  "extra_data": {<beliebige weitere Schlüssel-Wert-Paare>}}],
   "channels": [{"name","portals":[{"brand","sub_areas","stationary","mobile_avail"}],
                 "demographics":{"male_pct","employed_pct","higher_education_pct",
                                 "hhne_3000_plus_pct"},
-                "reach_stationary_mio","reach_mobile_mio","reach_multiscreen_mio"}],
-  "price_rules": [{"package_group","booking_type","cpm_euro"}]
+                "reach_stationary_mio","reach_mobile_mio","reach_multiscreen_mio",
+                "extra_data": {<beliebige weitere Schlüssel-Wert-Paare>}}],
+  "price_rules": [{"package_group","booking_type","cpm_euro",
+                   "extra_data": {<beliebige weitere Schlüssel-Wert-Paare>}}]
 }
 mobile_avail muss einer von: "yes", "only_mew", "no" sein.
 device muss einer von: "stationary", "mobile", "multiscreen" sein.
+extra_data ist immer ein Objekt ({}), niemals null oder ein Array.
 """
 
 USER_INSTRUCTION = (

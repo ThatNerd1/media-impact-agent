@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 import psycopg
+from psycopg.types.json import Jsonb
 from schemas import ExtractionResult
 
 _SCHEMA_SQL = Path(__file__).parent.parent / "sql" / "schema.sql"
@@ -219,8 +220,9 @@ def write_extraction_result(
             cur.execute(
                 """
                 INSERT INTO ad_formats
-                    (source_id, format_key, name, device, description, ctr_pct, programmatic)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (source_id, format_key, name, device, description, ctr_pct,
+                     programmatic, extra_data)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (format_key) DO UPDATE
                     SET name         = EXCLUDED.name,
                         device       = EXCLUDED.device,
@@ -228,12 +230,14 @@ def write_extraction_result(
                         description  = EXCLUDED.description,
                         ctr_pct      = EXCLUDED.ctr_pct,
                         programmatic = EXCLUDED.programmatic,
+                        extra_data   = ad_formats.extra_data || EXCLUDED.extra_data,
                         updated_at   = now()
                 RETURNING id
                 """,
                 (
                     source_id, fmt.format_key, fmt.name, fmt.device,
                     fmt.description, fmt.ctr_pct, fmt.programmatic,
+                    Jsonb(fmt.extra_data),
                 ),
             )
             fmt_id: str = cur.fetchone()[0]
@@ -272,8 +276,9 @@ def write_extraction_result(
                     (source_id, name,
                      reach_stationary_mio, reach_mobile_mio, reach_multiscreen_mio,
                      demo_male_pct, demo_employed_pct,
-                     demo_higher_edu_pct, demo_hhne_3000_plus_pct)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     demo_higher_edu_pct, demo_hhne_3000_plus_pct,
+                     extra_data)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (name) DO UPDATE
                     SET source_id               = EXCLUDED.source_id,
                         reach_stationary_mio    = EXCLUDED.reach_stationary_mio,
@@ -283,6 +288,7 @@ def write_extraction_result(
                         demo_employed_pct       = EXCLUDED.demo_employed_pct,
                         demo_higher_edu_pct     = EXCLUDED.demo_higher_edu_pct,
                         demo_hhne_3000_plus_pct = EXCLUDED.demo_hhne_3000_plus_pct,
+                        extra_data              = channels.extra_data || EXCLUDED.extra_data,
                         updated_at              = now()
                 RETURNING id
                 """,
@@ -295,6 +301,7 @@ def write_extraction_result(
                     demo.employed_pct if demo else None,
                     demo.higher_education_pct if demo else None,
                     demo.hhne_3000_plus_pct if demo else None,
+                    Jsonb(ch.extra_data),
                 ),
             )
             ch_id: str = cur.fetchone()[0]
@@ -330,8 +337,9 @@ def write_extraction_result(
         #    die Historisierungslogik steckt in upsert_price_rule)
         for pr in extraction.price_rules:
             cur.execute(
-                "SELECT upsert_price_rule(%s, %s, %s, %s)",
-                (source_id, pr.package_group, pr.booking_type, pr.cpm_euro * 100),
+                "SELECT upsert_price_rule(%s, %s, %s, %s, NULL, %s)",
+                (source_id, pr.package_group, pr.booking_type, pr.cpm_euro * 100,
+                 Jsonb(pr.extra_data)),
             )
 
         # 7. Quelldokument als erfolgreich extrahiert markieren
