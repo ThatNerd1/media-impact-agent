@@ -2,6 +2,11 @@
 
 Läuft gegen die lokale Docker-DB aus docker-compose.yml.
 Voraussetzung: Container mi-postgres-dev läuft auf Port 5433.
+
+DATABASE_URL wird von tests/conftest.py auf mediaimpact_test gesetzt.
+Starten mit:
+    docker compose up -d
+    pytest tests/test_main.py -v
 """
 
 import os
@@ -15,17 +20,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from crawler import DiscoveredPDF
-from db import SourceDoc, apply_schema, write_extraction_result
+from db import SourceDoc, write_extraction_result
 from main import _process_pdfs
 from schemas import ExtractionResult, PriceRule
-
-_DEFAULT_DB = "postgresql://miuser:mipass@127.0.0.1:5433/mediaimpact"
-os.environ.setdefault("DATABASE_URL", _DEFAULT_DB)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _schema():
-    apply_schema()
 
 
 @pytest.fixture(autouse=True)
